@@ -1,0 +1,7 @@
+{
+  "name": "lovable-i18n",
+  "version": "1.0.0",
+  "description": "Add multi-language support (i18n) to a Lovable app using Lingui: setup for both Lovable stacks (Vite SPA and TanStack Start), wrapping hardcoded text, PO catalogs, a GitHub Action that keeps catalogs in sync, coding rules in AGENTS.md, and connecting the Globalize.now translation platform.",
+  "tags": ["i18n", "internationalization", "localization", "lovable", "lingui", "po", "globalize"],
+  "supportedAgents": ["lovable"]
+}
