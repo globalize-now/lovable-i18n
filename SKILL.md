@@ -25,7 +25,7 @@ The library is **Lingui v6**, with one PO catalog per locale at `src/locales/{lo
 
 Because the whole pipeline — the catalog-sync workflow (Phase 5) and the Globalize.now hand-off (Phase 6) — runs through GitHub, this skill confirms GitHub is connected before doing anything, and stops until it is. See **Prerequisite: GitHub connection** below.
 
-One thing the terminal limit does **not** block: connecting Globalize. Once the user adds the **Globalize MCP connector** (Phase 6), you create the project and link the repo yourself, right here in the chat — no leaving Lovable. A paste-ready fallback covers anyone who'd rather not add the connector.
+One thing the terminal limit does **not** block: connecting Globalize. Once the user adds the **Globalize MCP connector** (Phase 6), you create the project, link the repo and start the first translation yourself, right here in the chat — no leaving Lovable. A paste-ready fallback covers anyone who'd rather not add the connector.
 
 ## Phases
 
@@ -33,11 +33,11 @@ One thing the terminal limit does **not** block: connecting Globalize. Once the 
 |---|---|
 | 1.1 Detect | Identify the project stack (Vite SPA or TanStack Start) and any existing i18n |
 | 1.2 Ask | One chat message collecting source locale, target locales, URL routing, opt-ins |
-| 2A / 2B Setup | Add dependencies, build config, `i18n.ts`, provider, catalogs, language switcher |
+| 2A / 2B Setup | Add dependencies, build config, `i18n.ts`, provider, catalogs, formatters module, language switcher |
 | 3 Rules | Add Lingui coding rules to `AGENTS.md` so every future edit stays localized |
 | 4 Wrap | Wrap the app's existing hardcoded strings in Lingui macros |
 | 5 CI | Add a GitHub Action that runs `lingui extract` and keeps catalogs in sync |
-| 6 Connect | Connect Globalize.now (default) — create the project + link the repo via the Globalize MCP |
+| 6 Connect | Connect Globalize.now (default) — create the project, link the repo and start the first translation via the Globalize MCP |
 
 Work the phases in order. Detect and Ask are quick; Setup is the bulk of the work. Before Phase 1, confirm GitHub is connected (**Prerequisite** below) — the skill stops until it is. Phase 6 (Connect) runs by default unless the user opts out.
 
@@ -140,7 +140,7 @@ Record the answers — `SOURCE_LOCALE`, the locale list, routing choice, opt-ins
 
 ## Phase 2A: Setup — Vite SPA
 
-Nine steps, A1–A9, in order. Then the optional URL-routing variant if the user opted in.
+Ten steps, A1–A10, in order. Then the optional URL-routing variant if the user opted in.
 
 ### A1. Dependencies
 
@@ -163,7 +163,7 @@ Dev dependencies:
 | `@lingui/vite-plugin` | `^6` | Compiles `.po` catalogs when the app imports them |
 | `@lingui/format-po` | `^6` | PO catalog formatter for `lingui.config.ts` |
 
-**Version pinning caveat:** `@lingui/swc-plugin` must match the `swc_core` version shipped by `@vitejs/plugin-react-swc`. If the preview build fails with an AST schema error or a plugin invocation error after this setup, look up the compatible version at https://plugins.swc.rs and pin `@lingui/swc-plugin` to that exact version (e.g. `5.8.0` — no caret). This exact pin overrides the `^6` default for this one package only.
+**Version compatibility caveat:** SWC's Wasm plugin ABI has been backward-compatible since `@swc/core` 1.15.0 ([announcement](https://blog.swc.rs/2025-11-4-wasm-backward-compatibility)), and `@lingui/swc-plugin` is built against a pinned `swc_core`: `6.2.0`-`6.6.0` against `swc_core@66.0.3`, and **`6.7.0`+ against `swc_core@77.1.1`**. `^6` resolves to `6.7.0` today, so `^6` needs no pin on a host whose `@swc/core` resolves to **1.16.x** (`swc_core@77.0.2`) — check the lockfile, not the `@vitejs/plugin-react-swc` range: `^4`'s dependency is only `@swc/core@^1.15.11`/`^1.15.46`, and `1.15.11` carries `swc_core@56.0.0`. If the preview build fails with an AST schema error or a plugin invocation error after this setup, the Lovable scaffold is on an older `@vitejs/plugin-react-swc` — raise it to `^4` first. If it cannot move, look the host range up at https://plugins.swc.rs and pin a `@lingui/swc-plugin` version **whose `@lingui/core` peer admits the major installed here** — for `^6` that is `6.0.0`-`6.1.0` and nothing older, since every `5.x` requires `@lingui/core@5` (a required peer, so `ERESOLVE` rather than a fix).
 
 ### A2. `vite.config.ts`
 
@@ -198,7 +198,7 @@ export default defineConfig(({ mode }) => ({
 }))
 ```
 
-The SWC plugin entry **must** be the tuple shape `['@lingui/swc-plugin', {}]` — a string + options object. Passing the plugin name as a bare string silently disables the macro transform: the build succeeds, but `<Trans>` never resolves and raw macro output leaks into the UI.
+The SWC plugin entry **must** be the tuple shape `['@lingui/swc-plugin', {}]` — a string + options object. A bare string is not silent: `@vitejs/plugin-react-swc@4` types the entry as `[string, Record<string, any>]`, so `tsc` reports TS2322 and `vite build` aborts while loading the config with `Cannot find module '@'`. The failure that *is* silent is the plugin being **absent** or shadowed by a leftover `@vitejs/plugin-react` — then the build exits 0 and the app throws *"…executed outside the context of compilation"* on load. After a production build, `! grep -rl --exclude-dir=node_modules "outside the context of compilation" .` is the check that catches it.
 
 ### A3. `lingui.config.ts`
 
@@ -220,6 +220,10 @@ const config: LinguiConfig = {
     },
   ],
   format: formatter({ lineNumbers: false }),
+  macro: {
+    // Lets `<a _t="tos">` inside <Trans> extract as <tos>…</tos> instead of <0>…</0>.
+    jsxPlaceholderAttribute: '_t',
+  },
 }
 
 export default config
@@ -281,6 +285,11 @@ export function saveLocale(locale: string) {
   } catch {
     // Storage unavailable — the choice just won't persist
   }
+  // `detectLocale()` reads `?lang=` *before* localStorage, so the URL has to be updated too.
+  // Outside the try/catch on purpose: when storage is blocked, the URL is the only thing left.
+  const url = new URL(window.location.href)
+  url.searchParams.set('lang', locale)
+  history.replaceState(history.state, '', url)
 }
 
 export { i18n }
@@ -292,6 +301,7 @@ Notes:
 - `detectLocale()` tries sources in order: `?lang=` URL parameter → `lang` key in localStorage → browser language (with regional fallback, `es-MX` → `es`) → source locale.
 - `activateLocale()` also keeps `<html lang>` and `<html dir>` in sync, so RTL locales (Arabic, Hebrew, Farsi, Urdu…) flip the document direction automatically.
 - Call `saveLocale()` only on an explicit user choice (the language switcher), so the choice persists across visits.
+- `saveLocale()` writes the **URL as well as storage, and both writes are required.** Because `detectLocale()` reads `?lang=` first, a visitor who arrives on `/?lang=es` from a shared link, switches to another locale, and reloads would be thrown straight back into Spanish if only `localStorage` had been updated — with no way out short of hand-editing the URL. Writing the param keeps read and write agreed, and has the useful side effect that the address bar always reflects the active locale, so the URL stays shareable. `history.replaceState` rather than `pushState`: switching locale should not add a back-button entry.
 - Why the try/catch around storage: in sandboxed preview iframes and cookie-blocking browsers, touching `localStorage` throws a `SecurityError` — unguarded, that happens inside `detectLocale()` before first render and leaves the app blank.
 
 TypeScript doesn't know what a `.po` import is, so add a module declaration. Append to `src/vite-env.d.ts` (it exists in every Lovable Vite project), or create `src/po-modules.d.ts` if you prefer not to touch it:
@@ -411,13 +421,145 @@ export function LanguageSwitcher() {
 
 Place the switcher where the user can see it — the app's existing header or navigation component if there is one, otherwise the top-level layout in `App.tsx`. Match the surrounding styling (Tailwind classes) rather than keeping the bare `w-[140px]`.
 
-### A9. Verify via the preview
+### A9. Create `src/i18n/format.ts`
+
+Ten locale-aware functions — money, numbers, percentages, dates, relative time, lists — behind one seam, `formatLocale()`. Wrapping strings (Phase 4) makes text translatable; this module is what makes a *value* — a price, a date, a count — render correctly per locale, and it's what the AGENTS.md rules (Phase 3) point at.
+
+Create the file exactly as below. It exports two ways to get at the ten functions: `useFormatters()`, a hook for components, and `getFormatters(locale)`, for everywhere else — see the "Numbers, currencies, dates" section of the Phase 3 rules for when to use which:
+
+```ts
+// src/i18n/format.ts
+import { useMemo } from 'react'
+import { useLingui } from '@lingui/react'
+
+export type DateInput = Date | number | string
+export type DatePreset = 'short' | 'medium' | 'long'
+
+/** The project's currency. Formatting follows the locale; the currency follows the data. */
+export const DEFAULT_CURRENCY = 'USD' // adjust to this project's currency
+
+/** Date presets. Trim to what this app actually formats. */
+export const DATE_PRESETS: Record<DatePreset, Intl.DateTimeFormatOptions> = {
+  short: { dateStyle: 'short' },
+  medium: { dateStyle: 'medium' },
+  long: { dateStyle: 'long' },
+}
+
+export type Formatters = {
+  money(amount: number, currency?: string): string
+  number(value: number, opts?: Intl.NumberFormatOptions): string
+  percent(value: number): string
+  compact(value: number): string
+  unit(value: number, unit: string): string
+  date(value: DateInput, preset?: DatePreset): string
+  time(value: DateInput): string
+  dateTime(value: DateInput): string
+  relativeTime(value: DateInput, now?: DateInput): string
+  list(items: string[], type?: 'and' | 'or'): string
+}
+
+/**
+ * THE SEAM. Formatting follows the UI locale today. To give this project a
+ * separate regional preference — an English UI that still renders 1.234,56 € —
+ * change this one function. Every formatter reads its locale from here.
+ */
+export function formatLocale(uiLocale: string): string {
+  return uiLocale
+}
+
+/** Intl instances keyed by locale + kind. Holds no request state, so it is safe under SSR. */
+const memo = new Map<string, unknown>()
+function cached<T>(key: string, make: () => T): T {
+  let f = memo.get(key) as T | undefined
+  if (f === undefined) memo.set(key, (f = make()))
+  return f
+}
+
+const toDate = (v: DateInput): Date => (v instanceof Date ? v : new Date(v))
+
+const UNITS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+  ['second', 1000],
+  ['minute', 60_000],
+  ['hour', 3_600_000],
+  ['day', 86_400_000],
+  ['week', 604_800_000],
+  ['month', 2_629_746_000],
+  ['year', 31_556_952_000],
+]
+
+/** Largest unit whose magnitude is at least 1; falls back to seconds. */
+export function pickRelativeUnit(deltaMs: number): [Intl.RelativeTimeFormatUnit, number] {
+  const abs = Math.abs(deltaMs)
+  for (let i = UNITS.length - 1; i >= 0; i--) {
+    const [unit, ms] = UNITS[i]
+    if (abs >= ms || i === 0) return [unit, Math.round(deltaMs / ms)]
+  }
+  return ['second', 0]
+}
+
+export function createFormatters(uiLocale: string): Formatters {
+  const locale = formatLocale(uiLocale)
+  const nf = (key: string, opts: Intl.NumberFormatOptions) =>
+    cached(`n:${locale}:${key}`, () => new Intl.NumberFormat(locale, opts))
+  const df = (key: string, opts: Intl.DateTimeFormatOptions) =>
+    cached(`d:${locale}:${key}`, () => new Intl.DateTimeFormat(locale, opts))
+
+  return {
+    money: (amount, currency = DEFAULT_CURRENCY) =>
+      nf(`cur:${currency}`, { style: 'currency', currency }).format(amount),
+    number: (value, opts) =>
+      opts
+        ? new Intl.NumberFormat(locale, opts).format(value)
+        : nf('dec', { style: 'decimal' }).format(value),
+    percent: (value) => nf('pct', { style: 'percent' }).format(value),
+    compact: (value) => nf('cmp', { notation: 'compact' }).format(value),
+    unit: (value, unit) => nf(`unit:${unit}`, { style: 'unit', unit }).format(value),
+    date: (value, preset = 'medium') =>
+      df(`p:${preset}`, DATE_PRESETS[preset]).format(toDate(value)),
+    time: (value) => df('t', { timeStyle: 'short' }).format(toDate(value)),
+    dateTime: (value) =>
+      df('dt', { dateStyle: 'medium', timeStyle: 'short' }).format(toDate(value)),
+    relativeTime: (value, now) => {
+      const from = now === undefined ? Date.now() : toDate(now).getTime()
+      const [unit, amount] = pickRelativeUnit(toDate(value).getTime() - from)
+      return cached(`r:${locale}`, () =>
+        new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }),
+      ).format(amount, unit)
+    },
+    list: (items, type = 'and') =>
+      cached(`l:${locale}:${type}`, () =>
+        new Intl.ListFormat(locale, {
+          style: 'long',
+          type: type === 'or' ? 'disjunction' : 'conjunction',
+        }),
+      ).format(items),
+  }
+}
+
+/** In components. Reads the locale from context, so it re-renders on locale change. */
+export function useFormatters(): Formatters {
+  const { i18n } = useLingui()
+  return useMemo(() => createFormatters(i18n.locale), [i18n.locale])
+}
+
+/** In loaders, server code, route handlers and tests — anywhere there is no React context. */
+export const getFormatters = createFormatters
+```
+
+Notes:
+
+- **Set `DEFAULT_CURRENCY` to the project's currency.** There's no terminal to grep with, so look through the codebase yourself: an existing `currency:` option, an `Intl.NumberFormat` / `toLocaleString` call, or a hardcoded symbol. If nothing turns up, leave `'USD'` and keep the `// adjust to this project's currency` comment — a wrong currency that looks deliberate is worse than one that flags itself.
+- **The TypeScript `lib` gate.** `Intl.ListFormat` needs `es2021.intl`; `Intl.RelativeTimeFormat`, `notation: 'compact'`, and `style: 'unit'` need `es2020.intl`. Open `tsconfig.json` (Lovable's TanStack Start template sometimes splits this into `tsconfig.app.json` via `references` — check both) and read `compilerOptions.lib`. If it resolves below `ES2021`, don't silently ship a module that fails to build: tell the user in one chat message and ask whether to raise `lib` to `ES2021` (recommended), or omit `list()` and `relativeTime()` — replacing their bodies with `throw new Error(...)` stubs so the ten-entry surface stays intact and a missed call fails loudly instead of silently.
+- **If `src/i18n/format.ts` already exists** (a re-run, or project code with that name), don't overwrite it — add any exports it's missing instead.
+
+### A10. Verify via the preview
 
 You can't run a build, but you can read the preview:
 
 1. **The preview builds with no errors.** If it fails mentioning the SWC plugin, an AST schema, or plugin invocation — that's the version-pinning caveat from A1; pin `@lingui/swc-plugin` exactly.
 2. **Switching languages works.** Pick a locale in the switcher; `document.documentElement.lang` updates (visible in the element inspector, or log it), and the choice survives a reload (localStorage).
 3. **Strings still show source text.** Expected — the catalogs are empty until strings are wrapped (Phase 4) and translations arrive (Phase 6). No console errors about failed catalog imports should appear.
+4. **The formatters module has no type errors.** If the preview's type-check surfaces an error on `Intl.ListFormat` or `Intl.RelativeTimeFormat`, that's the `lib` gate from A9 — resolve it there, don't suppress the error.
 
 Tell the user what to expect at this point: the plumbing is live, the visible text doesn't change yet.
 
@@ -552,7 +694,7 @@ Verify in the preview: `/` redirects to `/<locale>`, deep links re-prefix, switc
 
 ## Phase 2B: Setup — TanStack Start (SSR)
 
-Eight steps, B1–B8, in order. The defining constraint of this path: the app renders on the server (Cloudflare Workers), so **i18n state must be per-request**. A module-level i18n singleton activated per request would leak locales across concurrent users — request 2 activating `fr` mid-render of request 1 sends French HTML to an English visitor. Every server-side snippet below creates a fresh `setupI18n()` instance per request instead.
+Nine steps, B1–B9, in order. The defining constraint of this path: the app renders on the server (Cloudflare Workers), so **i18n state must be per-request**. A module-level i18n singleton activated per request would leak locales across concurrent users — request 2 activating `fr` mid-render of request 1 sends French HTML to an English visitor. Every server-side snippet below creates a fresh `setupI18n()` instance per request instead.
 
 Locale selection on this path is **cookie-based**: a `locale` cookie carries the visitor's choice, the `accept-language` header is the fallback, and the server picks the locale before rendering — so the first paint is already in the right language, with no client-side flash.
 
@@ -886,12 +1028,24 @@ export function LanguageSwitcher() {
 
 Place it in the app's existing header or navigation, matching the surrounding styling.
 
-### B8. Verify via the preview
+### B8. Create the formatters module
+
+Same file, same content as Phase 2A step **A9** — create `src/i18n/format.ts` exactly as there. The module doesn't know or care whether the app is SSR; `useFormatters()` reads the locale from `useLingui()`'s context the same way on both paths, and `Intl` is fully supported in the Cloudflare Workers runtime (the language switcher already relies on `Intl.DisplayNames` there — see B7).
+
+One Path B-specific addition. `useFormatters()` is a hook — it only works inside a component. Outside one — `lingui-middleware.ts`, `locale-fn.ts`, or any other server-function handler — use `getFormatters(locale)` instead, passing the same `locale` that `getLocaleFromRequest(request)` already resolved in B4's `i18n.server.ts`. Don't re-derive it; thread it through `context` the same way `i18n` itself is threaded.
+
+**Two hydration hazards worth knowing about now** — they're written into AGENTS.md in Phase 3 (Path B section only) so they stay in force for every future edit, not just this setup:
+
+- **Time zone.** `Intl.DateTimeFormat` uses the runtime's zone, so the Cloudflare Workers server renders in its deploy region's zone while the browser renders in the reader's — a hydration mismatch that never shows up in local dev. Render time-of-day in a client-only component, or pin an explicit `timeZone` in `DATE_PRESETS`.
+- **`relativeTime` needs a shared `now`.** The server and the client evaluate `Date.now()` at different instants and can land on opposite sides of a threshold (`an hour ago` on the server, `2 hours ago` after hydration). Resolve one reference instant per request — alongside the locale, in `lingui-middleware.ts` — and pass it explicitly: `f.relativeTime(postedAt, requestNow)`.
+
+### B9. Verify via the preview
 
 1. **The preview builds with no errors.** A build break right after adding a server function almost always means macros and `createServerFn` ended up in the same file — re-check the B7 file split.
 2. **First paint is already localized.** With a non-source `accept-language` (or the cookie set), the page arrives in that language with no flash of source-language content.
 3. **Switching locale round-trips.** Pick a language in the switcher: the `locale` cookie is set, the page reloads, and the new locale renders.
 4. **`<html lang>` is correct in view-source.** The server-rendered HTML (not just the live DOM) carries the right `lang` and `dir` — that's the SSR proof.
+5. **The formatters module has no type errors.** Same `lib` gate as A9 — resolve it there if it fires.
 
 Tell the user what to expect: the plumbing is live, but visible text doesn't change until strings are wrapped (Phase 4) and translations arrive (Phase 6).
 
@@ -907,6 +1061,7 @@ Mechanics:
 - If it exists, append the block at the end.
 - The block is wrapped in `<!-- lovable-i18n:rules:start -->` / `<!-- lovable-i18n:rules:end -->` markers. If those markers already exist in the file, **replace** everything between them and keep the marker lines themselves — this makes re-running the skill safe.
 - Substitute the real source locale for `en` in the catalog-upkeep section if it differs.
+- The block below already carries the "Time zone" and "`relativeTime` needs a shared `now`" paragraphs at the end of the "Numbers, currencies, dates" section, written for TanStack Start. **On a Path A (Vite SPA) project, delete both paragraphs before writing the file** — Path A has no server rendering, so neither hazard can occur, and a hydration note that can never fire is dead weight in every future edit's context. **On a Path B (TanStack Start) project, keep them as-is** — do not duplicate them.
 
 Write this block (everything between and including the markers):
 
@@ -970,8 +1125,18 @@ Interpolation: only a bare variable (`${name}`) auto-names its placeholder. Any 
 
 ```tsx
 import { ph } from '@lingui/core/macro'
-t`Total: ${ph({ total: i18n.number(amount) })}`   // → "Total: {total}", not "{0}"
+// f = useFormatters(), see "Numbers, currencies, dates" below
+t`Total: ${ph({ total: f.money(amount) })}`   // → "Total: {total}", not "{0}"
 ```
+
+Tags inside `<Trans>` have the same problem and no `ph()`: every inline element extracts as a positional `<0>`, `<1>`. Adding a wrapper renumbers the rest, changes the msgid, and drops that message’s finished translations; and two different elements with the same text (`<a>Upgrade</a>` vs `<button>Upgrade</button>`) collapse into one catalog entry. Name each tag with `_t`:
+
+```tsx
+<Trans>Read the <a _t="tos" href="/tos">terms</a> and the <a _t="privacy" href="/privacy">policy</a>.</Trans>
+// → "Read the <tos>terms</tos> and the <privacy>policy</privacy>."
+```
+
+`_t` is consumed by the macro and never reaches the DOM — as long as `lingui.config.ts` carries `macro: { jsxPlaceholderAttribute: '_t' }` (A3). Without it the attribute is silently ignored and rendered onto the element instead.
 
 ## Plurals
 
@@ -986,9 +1151,48 @@ t`Total: ${ph({ total: i18n.number(amount) })}`   // → "Total: {total}", not "
 - Never build plurals with a ternary between two separate strings — that bakes English plural rules into the code.
 - `value` must be a number.
 
-## Numbers and dates
+## Numbers, currencies, dates
 
-Use `i18n.number()` and `i18n.date()` (from `useLingui()`) — never hand-rolled formatting. Flag for review any `toFixed()`, `"$" + price` concatenation, or hardcoded date patterns like `"MM/DD/YYYY"`.
+Never hardcode a formatted number, currency symbol, or date string, and never construct `Intl` directly at a call site — that's exactly what `src/i18n/format.ts` exists to replace. Import the project's formatters from there:
+
+```tsx
+import { useFormatters } from '@/i18n/format'
+const f = useFormatters()
+f.money(amount)            // in components — reads the locale from Lingui context
+```
+
+```ts
+import { getFormatters } from '@/i18n/format'
+const f = getFormatters(locale)   // outside components: a plain .ts utility, a store,
+                                   // or, on TanStack Start, a server function / middleware
+```
+
+`useFormatters()` is a React hook — it only works inside a component. Reaching for it in a plain `.ts` file, a store, or (on TanStack Start) a server-function handler throws "Invalid hook call." Use `getFormatters(locale)` there instead. On TanStack Start, `locale` is the value `getLocaleFromRequest(request)` already resolves in `src/modules/lingui/i18n.server.ts` — thread it through rather than re-deriving it. In a Vite SPA with no server rendering, a non-component helper can read the locale off the imported `i18n` singleton from `@/i18n` (`i18n.locale`).
+
+The ten functions, one example each:
+
+| Function | Example |
+|---|---|
+| `f.money(amount, currency?)` | `f.money(19.99)` → `$19.99`. Pass currency only when a record carries its own: `f.money(order.total, order.currency)` |
+| `f.number(value, opts?)` | `f.number(1234.5)` → `1,234.5` |
+| `f.percent(value)` | `f.percent(0.42)` → `42%` — takes a **ratio**, not a percentage; `f.percent(42)` renders `4,200%` |
+| `f.compact(value)` | `f.compact(1500)` → `1.5K` |
+| `f.unit(value, unit)` | `f.unit(5, 'kilometer')` → `5 km` |
+| `f.date(value, preset?)` | `'short' \| 'medium' \| 'long'`, default `'medium'` |
+| `f.time(value)` | `f.time(d)` → `2:30 PM` |
+| `f.dateTime(value)` | date + time together |
+| `f.relativeTime(value, now?)` | `f.relativeTime(Date.now() - 86_400_000)` → `yesterday` |
+| `f.list(items, type?)` | `f.list(['a','b','c'])` → `a, b, and c`; `f.list(items, 'or')` for a disjunction |
+
+**Currency comes from the data, not the reader.** Never derive a currency code from the UI locale — that relabels a dollar price as euros for a German reader. Use the project default (`f.money(amount)`) unless the record itself carries a currency.
+
+**Needs a shape none of the ten produce?** Add it to `src/i18n/format.ts` — never inline an options object or construct `Intl` at the call site.
+
+**Flag for review, don't hand-fix:** `toFixed()`, a currency symbol concatenated with a number (`'$' + price`), date-format strings like `'MM/DD/YYYY'`, `new Date().toLocaleDateString()` with no explicit locale, and any `new Intl.` construction outside `src/i18n/format.ts`.
+
+**Time zone.** `Intl.DateTimeFormat` uses the runtime's zone, so the Cloudflare Workers server renders in its deploy region's zone while the browser renders in the reader's — a hydration mismatch that never shows up in local dev. Render time-of-day in a client-only component, or pin an explicit `timeZone` in `DATE_PRESETS`.
+
+**`relativeTime` needs a shared `now` under SSR.** The server and the client evaluate `Date.now()` at different instants and can land on opposite sides of a threshold (`an hour ago` on the server, `2 hours ago` after hydration). Resolve one reference instant per request — alongside the locale, in `src/modules/lingui/lingui-middleware.ts` — and pass it explicitly: `f.relativeTime(postedAt, requestNow)`.
 
 ## What not to wrap
 
@@ -1106,13 +1310,31 @@ async function handleSave() {
 }
 ```
 
-**Hand-rolled formatting.** Replace `"$" + price`, `toFixed()`, and date-string concatenation with the locale-aware helpers:
+**Hand-rolled formatting.** A wrapped string that still prints `$1,234.50` or `03/14/2026` by hand is only half-localized — the sentence translates, the value doesn't. Route every formatted value through `src/i18n/format.ts` (created in Phase 2, step A9/B8) instead of formatting it inline:
 
 ```tsx
-const { i18n } = useLingui()
-<span>{i18n.number(amount, { style: 'currency', currency: 'USD' })}</span>
-<time>{i18n.date(new Date(timestamp), { dateStyle: 'medium' })}</time>
+const f = useFormatters()
+<span>{f.money(amount)}</span>
+<time>{f.date(new Date(timestamp))}</time>
 ```
+
+The rewrite table:
+
+| Found | Replace with |
+|---|---|
+| `'$' + price`, `` `$${price}` ``, `"$" + amount` | `f.money(price)` |
+| `price.toFixed(2)` in user-visible copy | `f.money(price)` when it's a price; `f.number(value, { maximumFractionDigits: 2 })` otherwise |
+| `value.toLocaleString()` / `.toLocaleDateString()` / `.toLocaleTimeString()` with no explicit locale | `f.number` / `f.date` / `f.time` |
+| `new Intl.NumberFormat(...)` / `new Intl.DateTimeFormat(...)` at a call site | the matching helper |
+| `(a / b * 100).toFixed(0) + '%'` | `f.percent(a / b)` — the helper takes a **ratio**, not an already-multiplied percentage |
+| `dayjs(d).format('MM/DD/YYYY')`, `format(d, 'MM/dd/yyyy')` (date-fns) | `f.date(d)` |
+| `items.join(', ')` in user-visible copy | `f.list(items)` |
+| a hand-built `"3 days ago"` | `f.relativeTime(d)` |
+| `(n / 1000).toFixed(1) + 'K'` | `f.compact(n)` |
+
+**What NOT to convert:** log lines and `console.*`, IDs/slugs/filenames/cache keys, `data-*` attributes, CSV/JSON/API payloads, anything compared against a literal or parsed back later, test fixtures, any date going into an ISO-8601 field (`toISOString()` stays as-is), and `src/i18n/format.ts` itself — it constructs `Intl` on purpose. When in doubt whether a value is user-visible, leave it and flag it in your summary to the user; a locale-formatted number in a JSON payload silently breaks the consumer, and that's a worse outcome than an unconverted call site.
+
+Convert formatting **after** wrapping the strings in the same file — a formatted value usually lands as a placeholder inside a wrapped message (`Total: {total}`, not a separately-formatted node), so the `ph()` naming rule from Phase 3 applies to it.
 
 **Count-dependent strings.** Anything like `` `${items.length} results` `` is a plural, even when the English happens to look fine — convert to `<Plural>` / ICU per the Phase 3 rules, and put the **full ICU expression** in the catalog msgid.
 
@@ -1140,7 +1362,18 @@ Until the CI workflow (Phase 5) takes over, you maintain the `.po` files by hand
 
 ### Entry shape
 
-This is exactly what `lingui extract` writes with this project's config (`lineNumbers: false` in A3 keeps `#:` references to file paths only — no line numbers); match it:
+This is exactly what `lingui extract` writes with this project's config (`lineNumbers: false` in A3 keeps `#:` references to file paths only — no line numbers); match it. **Only the `msgstr` differs between the source locale and the targets** — every other line is identical across all catalog files.
+
+In the source locale (`src/locales/<sourceLocale>/messages.po`) the extractor repeats the msgid:
+
+```po
+#. A translator comment from the comment= prop
+#: src/components/Header.tsx
+msgid "Welcome back, {name}!"
+msgstr "Welcome back, {name}!"
+```
+
+In every target locale it is empty:
 
 ```po
 #. A translator comment from the comment= prop
@@ -1152,21 +1385,22 @@ msgstr ""
 - `#.` line: only when the code has a `comment=` for this string.
 - `#:` line: the source file path where the string lives.
 - `msgid`: the **exact** source text — including placeholder names (`{name}`) exactly as the macro produces them.
-- `msgstr`: empty (see below).
+- `msgstr`: the msgid repeated verbatim in the source locale; empty in every target locale (see below).
 - One blank line between entries.
 - When the code uses `context=`, add `msgctxt "the context value"` on its own line directly above `msgid`.
 
-Plural and other ICU strings put the **full ICU expression** in the msgid:
+Plural and other ICU strings put the **full ICU expression** in the msgid, and the same source/target split applies — the source locale repeats the whole ICU body into its `msgstr`, the targets leave it empty:
 
 ```po
 #: src/components/CartBadge.tsx
 msgid "{count, plural, one {# item} other {# items}}"
-msgstr ""
+msgstr "{count, plural, one {# item} other {# items}}"
 ```
 
 ### Rules
 
-- **Every locale gets the entry — including the source locale.** All with `msgstr ""`. Lingui falls back to the source text (the msgid) at runtime for any missing message, so empty msgstr renders correctly in the source locale and signals "untranslated" to the translation platform for the targets. Never copy the msgid into msgstr.
+- **Every locale gets the entry — including the source locale.** The source locale's `msgstr` repeats the msgid; every target locale's is empty. Never copy the msgid into a *target* `msgstr`: an empty one is what signals "untranslated" to the translation platform, and Lingui compiles a message with no translation down to its msgid anyway, so the target still renders the source text until a real translation arrives.
+- **A blank source-locale `msgstr` does not heal itself.** `lingui extract` preserves existing `msgstr` values, empty ones included, and its statistics table never counts the source locale as missing — so a source catalog hand-written with `msgstr ""` stays that way through every later extraction, with no diagnostic anywhere. It still *renders* correctly, because compile falls back to the msgid. But it permanently diverges from what the extractor writes, which is the one thing this protocol exists to guarantee.
 - **Append-only.** Add new entries at the end of each file. Never reorder existing entries, never rewrite `#.` / `#:` lines on entries you didn't author, never reformat the file.
 - **Formatting is CI-owned after the first CI run.** Extraction regenerates `#:` references and `#.` comments from code, adds missing entries, removes entries whose source strings are gone (`--clean`), and normalizes ordering — while **preserving existing `msgstr` translations**. Any hand-decoration you add beyond the shape above will be erased; any translation in msgstr survives.
 
@@ -1240,7 +1474,7 @@ Verify with the user after the next code push: the `i18n-extract` run shows up i
 
 ## Phase 6: Connect Globalize.now
 
-Connect Globalize unless the user opted out in the Ask phase — it's on by default. The best path is the **Globalize MCP connector**: once it's added to this Lovable project, you create the project and link the repo yourself, right here in the chat. If the user won't add the connector, fall back to the paste-ready dashboard / CLI steps below.
+Connect Globalize unless the user opted out in the Ask phase — it's on by default. The best path is the **Globalize MCP connector**: once it's added to this Lovable project, you create the project, link the repo and start the first translation yourself, right here in the chat. If the user won't add the connector, fall back to the paste-ready dashboard / CLI steps below.
 
 GitHub is already connected (the prerequisite), so your catalogs already live in a repo Globalize can reach — connecting Globalize just points it at that same repo.
 
@@ -1255,33 +1489,34 @@ Print this connection summary (with the project's real values):
 
 ### Primary path — the Globalize MCP connector
 
-Lovable can talk to Globalize through a hosted MCP server, so you can create the project and link the repo directly from this chat — no leaving Lovable.
+Lovable can talk to Globalize through a hosted MCP server, so you can create the project, link the repo and start the first translation directly from this chat — no leaving Lovable.
 
 1. **Check whether you already have Globalize tools.** If your connectors already expose Globalize tools (`projects`, `languages`, `github`, `repositories`), the connector is set up — skip to step 3.
 2. **Otherwise, walk the user through the one-time connector setup:**
 
    > Connect Globalize once so I can set it up from here:
-   > 1. Open **Connectors → Chat connectors → New MCP server**.
-   > 2. **Name:** Globalize
+   > 1. Open **Connectors**, click **+** (top right), and choose **MCP server**.
+   > 2. **Server name:** Globalize
    > 3. **Server URL:** `https://api.globalize.now/mcp`
-   > 4. **Authentication:** choose **Bearer token / API key** and paste your key from **https://app.globalize.now/settings/api-keys**.
-   > 5. Click **Add server**, then tell me to continue.
+   > 4. **Authentication:** keep **OAuth** (the default).
+   > 5. Click **Add & authorize**, sign in to Globalize and approve the access, then tell me to continue.
 
-   Wait for the user to confirm the connector is added, then continue.
+   Wait for the user to confirm the connector is added, then continue. OAuth is the only path — never ask the user to paste a token or key into Lovable. If **MCP server** is greyed out, a workspace admin has disabled custom MCP servers; the user needs the admin to re-enable it, or use the fallback path below.
 3. **Create the project and connect the repo using the Globalize MCP tools.** They mirror the `@globalize-now/cli-client` command groups — use whatever tool names your connector exposes; don't assume exact signatures. Report each step in the chat as you go:
    - **List languages** and match the source/target locale IDs (mirrors `languages list`).
    - **Create the project** with the suggested name and those language IDs (mirrors `projects create`).
    - **Install the Globalize GitHub App** — this is **separate from Lovable's GitHub connection**. The tool returns an install URL; ask the user to approve it in the browser, then read back the installation and note its UUID (mirrors `github install` → `github installations`).
    - **Connect the repository** with the catalog pattern `[{"pattern": "src/locales/{locale}/messages.po", "fileFormat": "po"}]` (mirrors `repositories create`).
    - Optionally **confirm detection** (mirrors `repositories detect`).
+4. **Start the first translation** — the last step; don't finish Phase 6 without it. Call **`translate_repository`** with the `id` the connect step returned and `deliveryMode: "pr"`, plus an `idempotencyKey` you make up for this one start (e.g. `first-translation-<repository id>`) so a retry never starts a second translation. Leave `branch` out — it translates the primary branch, which Lovable already syncs your catalogs to. It returns `{ accepted, branch }` as soon as the translation is queued; tell the user: "Your first translation has started. Globalize will open a pull request on GitHub with the translated catalogs — merge it and Lovable pulls them in." If it's refused, say why and how to fix it, then stop: out of credits or the project over budget → the user adds credits or raises the budget on the Globalize dashboard, then asks you to retry (same `idempotencyKey`); no locale path patterns → re-run the connect step's pattern (`[{"pattern": "src/locales/{locale}/messages.po", "fileFormat": "po"}]`) and retry.
 
-   Once the repo is connected, you're done — jump to **Close the loop** below.
+   Then jump to **Close the loop** below.
 
 ### Fallback path — no MCP (dashboard or local CLI)
 
 If the user would rather not connect the MCP, these steps happen **outside this chat**, on the Globalize dashboard or the user's machine — print everything ready to paste.
 
-**Option 1 — Globalize.now dashboard (no tooling needed).** On [globalize.now](https://globalize.now): create a project with those source/target languages, connect the **same GitHub repository Lovable syncs to** (this installs the Globalize GitHub App — approve it in the browser; translation deliveries then flow back into Lovable through that repo), and set the catalog pattern and file format above.
+**Option 1 — Globalize.now dashboard (no tooling needed).** On [globalize.now](https://globalize.now): create a project with those source/target languages, connect the **same GitHub repository Lovable syncs to** (this installs the Globalize GitHub App — approve it in the browser; translation deliveries then flow back into Lovable through that repo), set the catalog pattern and file format above, and start the first translation of the repository as a pull request.
 
 **Option 2 — Globalize CLI on the user's machine (requires Node.js).** Give the user this sequence to run locally:
 
@@ -1312,11 +1547,17 @@ npx @globalize-now/cli-client repositories create \
   --github-installation-id <INSTALLATION_UUID> \
   --patterns '[{"pattern": "src/locales/{locale}/messages.po", "fileFormat": "po"}]' \
   --json
+
+# 6. Start the first translation (the repository id is the "id" step 5 returned)
+npx @globalize-now/cli-client repositories translate \
+  --id <REPOSITORY_ID> \
+  --delivery-mode pr \
+  --json
 ```
 
 `@globalize-now/cli-client` is deliberately unpinned — the platform manages its release cadence. If the user works with a local coding agent (Claude Code etc.), point them at the `globalize-now-account-setup` skill (sign in) followed by `globalize-now-project-setup` (create the project + connect the repo) instead — together they walk the same flow with full auto-detection.
 
-**Close the loop.** Once connected, Globalize picks up the catalogs from the repo, translates new entries, and delivers translated `.po` files back via PRs or pushes to the default branch. Lovable's GitHub sync pulls them in, and the language switcher starts showing real translations — no action needed in this chat. The CI workflow ignores locale-only pushes (the `!src/locales/**` path filter), so translation deliveries never trigger extraction loops.
+**Close the loop.** The first translation arrives as a pull request — merge it on GitHub. From then on, Globalize picks up the catalogs from the repo, translates new entries, and delivers translated `.po` files back via PRs or pushes to the default branch. Lovable's GitHub sync pulls them in, and the language switcher starts showing real translations — no action needed in this chat. The CI workflow ignores locale-only pushes (the `!src/locales/**` path filter), so translation deliveries never trigger extraction loops.
 
 ---
 
@@ -1324,9 +1565,11 @@ npx @globalize-now/cli-client repositories create \
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Preview build error mentioning "AST schema mismatch" or "failed to invoke plugin" (Path A) | `@lingui/swc-plugin` compiled against a different `swc_core` than `@vitejs/plugin-react-swc` ships | Look up the compatible version at https://plugins.swc.rs and pin `@lingui/swc-plugin` to that **exact** version (no caret) — see the A1 caveat |
+| Preview build error mentioning "AST schema mismatch" or "failed to invoke plugin" (Path A) | The host's resolved `@swc/core` carries an older `swc_core` than the plugin was built against (`6.7.0`+ → `swc_core@77.1.1`) | Raise the host to `@vitejs/plugin-react-swc@^4` **and** let `@swc/core` resolve to `1.16.x` (check the lockfile); only if it cannot move, pin `@lingui/swc-plugin` to a build matching the host's `swc_core` via https://plugins.swc.rs — see the A1 caveat |
 | Build fails resolving `@lingui/vite-plugin`, or ESM/`ERR_REQUIRE_ESM`-style errors from Lingui packages | The build image's Node is too old for Lingui 6 (ESM-only, needs Node ≥ 22.19) | Pin **all** `@lingui/*` packages to `@^5` instead. Keep `lingui.config.ts` as-is — the `formatter(...)` form from `@lingui/format-po` works in v5 too |
 | TS error `Cannot find module './locales/en/messages.po'` | Missing the `*.po` module declaration | Add the declaration from A4 (`src/vite-env.d.ts` or `src/po-modules.d.ts`) |
+| `Invalid hook call` after adding a formatter call in a store, plain `.ts` file, or (Path B) a server function | `useFormatters()` is a React hook, called outside a component | Use `getFormatters(locale)` instead — see A9's notes and, on Path B, the B8 addendum |
+| TS error on `Intl.ListFormat` or `Intl.RelativeTimeFormat` types in `format.ts` | `tsconfig.json` `compilerOptions.lib` resolves below `ES2021` | Raise `lib` to `ES2021`, or omit `list()` / `relativeTime()` — ask the user which (A9) |
 | Strings render as raw ICU (`{count, plural, ...}`) or stay in the source language after switching | Catalog not loaded for that locale (typo in the dynamic import path, missing `.po` file) or the entry is missing from that locale's catalog | Check the `src/locales/<locale>/messages.po` file exists with a valid header (A7) and contains the entry (PO protocol) |
 | `<Trans>` renders as literal macro output, but the build succeeds (Path A) | SWC plugin registered as a bare string instead of the `['@lingui/swc-plugin', {}]` tuple | Use the tuple shape in `vite.config.ts` (A2) |
 | (Path B) Build breaks right after adding a server function | Lingui macros and `createServerFn` in the same file | Split them: server functions in their own macro-free file; use ``i18n._(msg`...`)`` inside handlers (B7) |
@@ -1335,5 +1578,5 @@ npx @globalize-now/cli-client repositories create \
 | CI workflow never runs | GitHub not connected in Lovable; the workflow file didn't sync (GitHub App lacks the `workflows` permission); or the default branch isn't `main` | Connect GitHub; add the YAML via the GitHub web UI; fix `branches:` in the workflow (Phase 5) |
 | CI run fails at the install step (`npm ci`) | Lockfile missing or out of sync — e.g. the repo ships `bun.lockb` or `pnpm-lock.yaml` instead of `package-lock.json`, or the lockfile lags the added dependencies | Switch the step to `npm install --no-audit --no-fund`, or use the setup action + install command matching the repo's lockfile (Phase 5) |
 | CI commits catalog updates but Lovable doesn't show them | Lovable's sync follows the default branch only | Confirm the workflow pushed to the default branch (check the Actions log and the branch of the `chore(i18n)` commit) |
-| Globalize tools not available after adding the connector (Phase 6) | Wrong URL, missing/invalid API key, or the connector was added but this chat turn predates it | Verify the URL is exactly `https://api.globalize.now/mcp`, re-check the key at `app.globalize.now/settings/api-keys`, then reference the Globalize connector again |
+| Globalize tools not available after adding the connector (Phase 6) | Wrong URL, the OAuth authorization wasn't completed, or the connector was added but this chat turn predates it | Verify the URL is exactly `https://api.globalize.now/mcp`, re-run **Add & authorize** (OAuth) and finish the Globalize sign-in, then reference the Globalize connector again |
 | Globalize's GitHub App install looks redundant with Lovable's GitHub | Globalize installs its **own** GitHub App, separate from Lovable's GitHub connection | Have the user approve the Globalize GitHub App in the browser when the connect step (MCP `github install`, or the dashboard) triggers it — Lovable's own GitHub link doesn't cover it |
