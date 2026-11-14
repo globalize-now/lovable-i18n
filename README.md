@@ -12,7 +12,9 @@ monorepo under `skills/lovable-i18n/`. Lovable imports skills by pointing at a G
 import works reliably against a repository **root** but not against a **subdirectory**. This repo
 is a standalone extraction so the skill sits at the root and can be imported directly.
 
-The monorepo remains the canonical source — changes should be made there and mirrored here.
+The monorepo copy is canonical. Every merge to its `main` that changes `skills/lovable-i18n/SKILL.md`
+is mirrored automatically to this repo's root (`.github/workflows/mirror-lovable-i18n.yml` in
+`globalize-skills`). This repo takes no direct edits: the mirror overwrites `SKILL.md` every time.
 
 ## Import into Lovable
 
